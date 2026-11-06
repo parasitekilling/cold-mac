@@ -21,15 +21,16 @@ CONN_KEY = r"SYSTEM\CurrentControlSet\Control\Network\{4d36e972-e325-11ce-bfc1-0
 HEX = "0123456789ABCDEF"
 TASK_NAME = "ColdMac-Boot"
 
-# Curated vendor OUIs (first three octets). Extend with more from the IEEE
-# OUI registry as needed. Format: (vendor name, hex prefix, <= 6 hex digits).
 VENDOR_OUI = (
     ("Intel",     "001B21"),
     ("Intel",     "3C970E"),
     ("Intel",     "8C1645"),
     ("Intel",     "94659C"),
+    ("Intel",     "C8E2EB"),
     ("Realtek",   "00E04C"),
     ("Realtek",   "001CF0"),
+    ("Realtek",   "00C0CA"),
+    ("Realtek",   "52540A"),
     ("Broadcom",  "001018"),
     ("Broadcom",  "000AF7"),
     ("Apple",     "001B63"),
@@ -70,7 +71,62 @@ EXCLUDE_MARKERS = (
     "loopback",
     "npcap",
     "pseudo",
+    "wintun",
+    "remote ndis",
+    "internet sharing",
+    "userspace tunnel",
 )
+
+
+# ---------------------------------------------------------------- color
+
+def enable_vt():
+    """Try to enable ANSI VT processing on the Windows console."""
+    try:
+        k32 = ctypes.windll.kernel32
+        handle = k32.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if not k32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        if not k32.SetConsoleMode(handle, mode.value | 0x0004):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+class C:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE = "\033[34m"
+    MAGENTA = "\033[35m"
+    CYAN = "\033[36m"
+    GRAY = "\033[90m"
+    BRED = "\033[91m"
+    BGREEN = "\033[92m"
+    BYELLOW = "\033[93m"
+    BBLUE = "\033[94m"
+    BMAGENTA = "\033[95m"
+
+
+def paint(s, color, enabled):
+    if not enabled:
+        return s
+    return f"{color}{s}{C.RESET}"
+
+
+def resolve_color(no_color, force_color=None):
+    if no_color:
+        return False
+    if force_color:
+        return enable_vt()
+    if not sys.stdout.isatty():
+        return False
+    return enable_vt()
 
 
 # ---------------------------------------------------------------- helpers
@@ -155,6 +211,16 @@ def random_vendor_mac(vendor=None):
     mac = (prefix + suffix).upper()
     first = int(mac[0:2], 16) & 0xFE
     return f"{first:02X}{mac[2:]}", name
+
+
+def oui_match(mac):
+    if not mac or len(mac) < 6:
+        return None
+    prefix = mac[0:6].upper()
+    for name, oui in VENDOR_OUI:
+        if oui.upper() == prefix:
+            return name
+    return None
 
 
 # ---------------------------------------------------------------- registry
@@ -289,27 +355,71 @@ def find(adapters, query):
     return None
 
 
+# ---------------------------------------------------------------- classify
+
+def classify(ad, current, config_entry):
+    """Return (label, color) describing what 'current' likely is."""
+    if not current:
+        return "ABSENT", C.GRAY
+    cur = current.upper()
+    if config_entry and config_entry.get("mac", "").upper() == cur:
+        return "SPOOFED", C.BYELLOW
+    if ad.get("custom") and ad["custom"].upper() == cur:
+        return "CUSTOM", C.BMAGENTA
+    try:
+        first = int(cur[0:2], 16)
+    except (ValueError, IndexError):
+        return "UNKNOWN", C.DIM
+    if first & 0x02:
+        return "LOCAL", C.BRED
+    return "REAL", C.BBLUE
+
+
 # ---------------------------------------------------------------- commands
 
-def do_list(include_virtual=False):
+def do_list(include_virtual=False, color=False):
     adapters = list_adapters(include_virtual=include_virtual)
     if not adapters:
         print("no adapters found")
         return 0
     cfg = load_config()
-    print(f"{'NAME':<24}{'CURRENT':<16}{'CUSTOM':<16}{'VENDOR':<12}DESCRIPTION")
-    print("-" * 110)
+
+    header = f"{'NAME':<14}{'CURRENT':<16}{'TYPE':<10}{'VENDOR':<12}{'CUSTOM':<16}DESCRIPTION"
+    print(paint(header, C.BOLD, color))
+    print("-" * 118)
+
     for ad in adapters:
-        cur = current_mac(ad["name"]) or "not present"
-        saved = cfg["interfaces"].get(ad["guid"], {})
-        cust = saved.get("mac") or ad["custom"] or "-"
-        vendor = saved.get("vendor", "-")
-        print(f"{ad['name']:<24}{cur:<16}{cust:<16}{vendor:<12}{ad['desc']}")
+        cur = current_mac(ad["name"])
+        cur_disp = cur or "not present"
+        entry = cfg["interfaces"].get(ad["guid"], {})
+        label, tcolor = classify(ad, cur, entry)
+        vendor = oui_match(cur) if cur else None
+        if not vendor and entry:
+            vendor = entry.get("vendor")
+        vendor_disp = vendor or "-"
+        cust = entry.get("mac") or ad["custom"] or "-"
+
+        cur_cell = paint(f"{cur_disp:<16}", tcolor, color)
+        type_cell = paint(f"{label:<10}", tcolor, color)
+        print(f"{ad['name']:<14}{cur_cell}{type_cell}{vendor_disp:<12}{cust:<16}{ad['desc']}")
+
     print()
-    print("CURRENT = what getmac reports (may hide a successful spoof on some drivers)")
-    print("CUSTOM  = what Cold Mac wrote to the registry for this adapter")
+    print(paint("LEGEND", C.BOLD, color))
+    legend = (
+        ("REAL",     C.BBLUE,    "no registry override, universally administered - likely the hardware MAC"),
+        ("SPOOFED",  C.BYELLOW,  "set by Cold Mac, recorded in config.json"),
+        ("CUSTOM",   C.BMAGENTA, "NetworkAddress in registry set by another tool"),
+        ("LOCAL",    C.BRED,     "locally administered bit set, no registry override (Win11 random Wi-Fi or another randomizer)"),
+        ("ABSENT",   C.GRAY,     "adapter not present / disconnected"),
+    )
+    for name, col, desc in legend:
+        print(f"  {paint(f'{name:<10}', col, color)}{desc}")
+    print()
+    print(paint("REAL is *likely* the burned-in MAC. Some drivers present a Windows-11-randomized", C.DIM, color))
+    print(paint("Wi-Fi MAC as universally administered, which looks identical to real hardware.", C.DIM, color))
     if not include_virtual:
-        print("(virtual adapters hidden; use --all to include them)")
+        print()
+        print(paint("(virtual adapters hidden; use --all to include them)", C.DIM, color))
     return 0
 
 
@@ -323,7 +433,7 @@ def do_apply(ad, mac, vendor):
     print(f"applied {mac} ({vendor}) to {ad['name']}")
     if reported is None:
         print("note: adapter not reported by getmac after bounce; check Device Manager")
-    elif reported != mac:
+    elif reported.upper() != mac.upper():
         print(f"note: getmac reports {reported}. Some drivers hide the custom MAC")
         print("      from local tools; check Device Manager > adapter > Advanced")
     cfg = load_config()
@@ -402,7 +512,7 @@ def register_boot():
     py = sys.executable
     script = os.path.abspath(__file__)
     with open(bat, "w", encoding="utf-8", newline="") as f:
-        f.write('@echo off\r\n')
+        f.write("@echo off\r\n")
         f.write(f'"{py}" "{script}" --apply-saved\r\n')
     code, _, err = run([
         "schtasks", "/Create", "/TN", TASK_NAME,
@@ -437,6 +547,7 @@ def main():
     p.add_argument("--version", action="version", version=f"cold-mac {__version__}")
     p.add_argument("-l", "--list", action="store_true", help="list network adapters")
     p.add_argument("--all", action="store_true", help="include virtual adapters in --list")
+    p.add_argument("--no-color", action="store_true", help="disable colored output")
     p.add_argument("-i", "--interface", help="adapter friendly name, e.g. 'Wi-Fi'")
     p.add_argument("-r", "--random", action="store_true", help="assign a random vendor MAC")
     p.add_argument("-m", "--mac", help="assign a specific 12-hex-digit MAC")
@@ -448,8 +559,10 @@ def main():
     p.add_argument("--no-boot", action="store_true", help="remove logon task")
     a = p.parse_args()
 
+    color = resolve_color(a.no_color)
+
     if a.list:
-        return do_list(include_virtual=a.all)
+        return do_list(include_virtual=a.all, color=color)
 
     if not is_admin():
         print("error: administrator privileges required")

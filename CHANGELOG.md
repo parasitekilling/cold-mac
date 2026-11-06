@@ -18,6 +18,15 @@
 - `--all` to include virtual adapters in `--list`.
 - Post-apply verification note explaining when `getmac` masks a
   successful spoof.
+- TYPE column in `--list` with color-coded classification (REAL /
+  SPOOFED / CUSTOM / LOCAL / ABSENT). Color auto-detects VT support;
+  `--no-color` forces plain output.
+- OUI lookup: `--list` shows the vendor name for MACs matching the
+  built-in list.
+- `Wintun`, `Remote NDIS`, and `Internet Sharing` adapters filtered as
+  virtual (previously slipped through).
+- `cold-mac.bat` shows `--help` plus a usage hint on double-click
+  instead of a bare "interface required" error.
 
 ### Changed
 

@@ -66,6 +66,28 @@ MACs. Open a new terminal afterwards.
 - `--restore-all` reverts every adapter in the saved config.
 - `--boot` / `--no-boot` register or remove the logon task.
 
+## Reading the --list output
+
+The TYPE column tells you what the CURRENT MAC probably is:
+
+| TYPE | Meaning |
+|------|---------|
+| `REAL` (blue) | No registry override, universally administered bit clear. *Likely* the burned-in hardware MAC. |
+| `SPOOFED` (yellow) | NetworkAddress in registry matches Cold Mac's config — you set it. |
+| `CUSTOM` (magenta) | NetworkAddress in registry but not from Cold Mac — another tool set it. |
+| `LOCAL` (red) | No registry override, but the locally administered bit is set. Windows 11's random Wi-Fi feature, or another randomizer. |
+| `ABSENT` (gray) | Adapter not present / disconnected. |
+
+**Caveat:** `REAL` is *likely*, not *definitively*, the hardware MAC. A
+few drivers present a Windows-11-randomized Wi-Fi MAC as universally
+administered, which is indistinguishable from real hardware at layer 2.
+The only way to confirm a spoof took effect is Device Manager's Advanced
+tab or `arp -a` from another device — both documented below.
+
+Colors require a VT-capable console (Windows Terminal, PowerShell 7,
+cmd.exe on Win11). If you see escape sequences like `[94m` instead of
+color, run with `--no-color`.
+
 ## Locally administered vs vendor MAC
 
 Cold Mac 1.1.0 deliberately does **not** generate `02`-prefixed locally
