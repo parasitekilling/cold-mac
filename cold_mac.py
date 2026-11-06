@@ -24,7 +24,7 @@ import sys
 import time
 import uuid
 
-VERSION = "1.3.0"
+VERSION = "1.2.0"
 CLASS_KEY = (
     r"SYSTEM\CurrentControlSet\Control\Class"
     r"\{4d36e972-e325-11ce-bfc1-08002be10318}"
