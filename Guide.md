@@ -2,67 +2,83 @@
 
 ## How the change works
 
-Windows drivers for NDIS miniport adapters read an optional registry
-value called `NetworkAddress` when the adapter is initialised. If it
-is present and parses as 12 hex digits, the driver presents that value
-up the stack as the adapter's MAC instead of the burned-in address.
+Windows NDIS drivers read an optional registry value called
+`NetworkAddress` when the adapter initialises. If present and parseable
+as 12 hex digits, the driver presents that value up the stack instead of
+the burned-in MAC.
 
-The key lives at:
+Key location:
 
     HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}\<NNNN>
 
-where `<NNNN>` is a four-digit subkey (0000, 0001, ...). Each subkey
-carries `DriverDesc` (the driver's description), `NetCfgInstanceId`
-(the adapter GUID), and optionally `NetworkAddress`.
-
-The friendly name ("Wi-Fi") is not in that key. It lives in:
+Friendly name ("Wi-Fi") lives in:
 
     HKLM\SYSTEM\CurrentControlSet\Control\Network\{4d36e972-e325-11ce-bfc1-08002be10318}\<GUID>\Connection\Name
 
-Cold Mac joins the two: it walks the class key, reads each subkey's
-`NetCfgInstanceId`, then resolves the friendly name from the
-connection key.
+Cold Mac walks the class key, reads each subkey's `NetCfgInstanceId`,
+resolves the friendly name from the connection key, and stores the saved
+MAC in `%LOCALAPPDATA%\ColdMac\config.json` keyed by that GUID.
 
 ## Why bounce the adapter
 
-`NetworkAddress` is read at miniport initialisation. Writing the value
+`NetworkAddress` is only read at miniport initialisation. Writing it
 while the adapter is up does nothing until the next init. `netsh
 interface set interface <name> admin=disable` followed by `enable`
-forces a tear-down and re-init, which is the cheapest way to make the
-new value take effect without a reboot.
+forces tear-down and re-init. Cold Mac retries the bounce twice, because
+some USB Wi-Fi adapters need a beat to re-enumerate.
 
-## Why the verification step
+## Why the config is keyed by GUID
 
-A minority of drivers accept the registry write but ignore the value,
-or normalise it (for example, forcing the local bit). Cold Mac reads
-the adapter's reported MAC after the bounce and compares. On mismatch
-it returns exit code 2 and tells you, rather than claiming success.
+Friendly names can be renamed by the user. If the config were keyed by
+name, renaming `Wi-Fi` to `HomeWiFi` in Windows would orphan the saved
+MAC. GUIDs are stable for the lifetime of the adapter.
 
-## Why no backup file
+## Why no backup of the real MAC
 
-The hardware MAC is the backup. Deleting `NetworkAddress` and
-bouncing restores it because the driver falls back to the EEPROM /
-firmware value. A backup file would be the *only* artifact Cold Mac
-could leave behind, and it is unnecessary. This is why the tool can
-honestly claim it leaves no trace of the real MAC.
+The hardware MAC **is** the backup. Deleting `NetworkAddress` and
+bouncing restores the burned-in value, because the driver falls back to
+the NIC's firmware. Storing the real MAC somewhere would be the only
+artifact Cold Mac could possibly leak, and it is unnecessary. This is
+why the tool can honestly claim it leaves no trace.
 
-## Why locally administered (`02`)
+## Why real vendor OUIs by default
 
-The IEEE defines bit 0 of the first octet as the I/G bit (0 =
-unicast) and bit 1 as the U/L bit (1 = locally administered). A MAC
-starting with `02` is therefore unicast and explicitly marked as
-software-assigned. Networks that log MACs will see that the address
-was set by software, which is the honest signal. If you need to blend
-in with real hardware, supply a vendor OUI with `--mac`; understand
-that doing so is impersonation and carries different legal weight.
+A MAC starting with `02` is locally administered — the I/G bit is 0
+(unicast) and the U/L bit is 1 (software-assigned). Networks that log
+MACs can see this and may treat it as suspicious. A MAC with a real
+vendor OUI is indistinguishable from genuine hardware at layer 2.
+
+Cold Mac 1.1.0 uses a curated list of ~28 real vendor OUIs covering
+Intel, Realtek, Broadcom, Apple, Dell, HP, Lenovo, ASUS, TP-Link,
+Netgear, Samsung, Microsoft, and Qualcomm. Extend `VENDOR_OUI` in
+`cold_mac.py` with more if needed. Every entry is at most 6 hex digits;
+a 3-byte entry leaves the last 3 bytes random, which is what real NICs
+do.
+
+## Why some drivers ignore the value
+
+A minority of NDIS miniport drivers ignore `NetworkAddress` unless a
+second value, `PnPCapabilities`, is set to `24` in the same class key.
+This is a known quirk of certain Intel Wi-Fi adapters. Cold Mac does
+not set `PnPCapabilities` automatically because it changes driver
+behaviour more invasively than a MAC override.
+
+If your adapter ignores the value:
+
+1. Open `regedit` as administrator.
+2. Navigate to `HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}\<subkey>` for your adapter. Identify it by `DriverDesc`.
+3. Create a `DWORD` value named `PnPCapabilities`, set to `24`.
+4. Bounce the adapter. Try the Cold Mac command again.
+
+To undo, delete `PnPCapabilities`.
 
 ## What this does not solve
 
-MAC is layer 2. It is visible to the AP, to switches, and to anything
-on the same broadcast domain. It is not visible to your ISP, which
-operates at layer 3 and identifies you by the public IP on the WAN
-side of your router. If your threat model is "my ISP should not know
-who I am," MAC randomisation is irrelevant to it; VPN or Tor is the
-relevant tool. If your threat model is "the café Wi-Fi should not
-track my laptop across visits, and the router should not see my real
-hardware address," Cold Mac is the right tool.
+MAC is layer 2. It is visible to the access point, switches, and any
+host on the same broadcast domain. It is not visible to your ISP, which
+operates at layer 3 and identifies your connection by the public IP on
+the WAN side of your router. If your threat model is "my ISP should not
+know who I am," MAC randomisation is irrelevant; VPN or Tor is the
+relevant tool. If your threat model is "the café Wi-Fi should not track
+my laptop across visits, and the router should not see my real hardware
+address," Cold Mac is the right tool.
