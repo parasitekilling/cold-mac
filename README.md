@@ -1,142 +1,84 @@
-# Cold Mac
+# Cold Mac 1.2.0
 
-A minimal, dependency-free MAC address changer for Windows 11.
+A minimal, dependency-free MAC address configuration utility for Windows 11.
 
-## What it does
+Built for security researchers, red teamers, and privacy-conscious users who need a reliable way to test network access controls without risking a broken network connection. 
 
-- Lists every physical network adapter Windows knows about, with the MAC
-  the system currently reports and any custom value already set.
-- Assigns a MAC built from a real vendor OUI plus 3 random bytes, so it
-  looks like ordinary hardware to routers, DHCP servers, and OUI lookups.
-- Remembers the choice per adapter (keyed by GUID, so renaming the
-  adapter does not orphan the setting).
-- Optionally re-applies saved MACs at every sign-in via a scheduled task.
-- Reverts by deleting the `NetworkAddress` registry value and bouncing the
-  adapter; the driver restores the hardware MAC.
+## The "Honest" Approach to MAC Spoofing
 
-## What it does NOT do
+Most Windows MAC changers silently fail. They write a registry key, tell the user "Success!", and walk away. Meanwhile, the network card completely ignores the change.
 
-- It does not hide you from your ISP. Your ISP identifies your connection
-  by the public IP on your router's WAN interface, not your adapter's MAC.
-  Use a VPN or Tor for ISP-level anonymity.
-- It does not change the router's WAN MAC.
-- It does not bypass 802.1X, captive portals, or enterprise NAC.
-- It does not read, store, or transmit your hardware MAC. There is no
-  backup file, no log, no telemetry, no outbound network call. To revert,
-  it simply deletes the value it wrote; the driver falls back to the
-  burned-in address from the NIC itself.
+Cold Mac is different. It uses structured Windows API calls (`Get-NetAdapter`), strict validation, and **automatic rollback**. 
 
-## Scope
+If your network driver refuses the MAC change (which many modern Intel and Realtek cards do), Cold Mac will detect the failure, safely restore your original configuration, and tell you exactly what happened. You will never be left offline.
 
-- Windows 11 x64 or ARM64.
-- Python 3.8 or newer.
-- Administrator privileges at runtime.
-- Wi-Fi, Ethernet, and USB network adapters, subject to the driver
-  honouring `NetworkAddress`. The script reports when it does not.
+## Features
 
-## Install
+- **Interactive Menu & CLI:** Double-click the launcher for a guided experience, or use CLI commands for automation.
+- **Automatic Rollback:** If the driver rejects the new MAC, the tool restores the original registry setting and restarts the adapter.
+- **Zero Dependencies:** Pure Python 3 standard library. No external packages, no compiled binaries, no kernel drivers.
+- **Strict Validation:** Only accepts locally administered, unicast MAC addresses (e.g., `02:11:22:33:44:55`) to prevent network collisions.
+- **Safe Operations:** Maps the network adapter GUID to the correct registry key, avoiding the fragile text-parsing used by older tools.
+- **No Telemetry:** Your data stays on your machine.
 
-    install.bat
+## ⚠️ Known Driver Limitations
 
-Copies the script to `%LOCALAPPDATA%\ColdMac`, drops a launcher next to
-it, appends that folder to your user `PATH`, and — if run as
-administrator — offers to register a logon task that re-applies saved
-MACs. Open a new terminal afterwards.
+Modern Windows drivers often handle MAC addresses at the hardware/firmware level and will ignore software overrides. 
+- **Intel Wi-Fi (e.g., AX201):** Officially does not support custom MAC addresses.
+- **Realtek USB/Wi-Fi (e.g., 8812AU):** Many modern Realtek drivers ignore the `NetworkAddress` registry key.
+- **Ethernet (Realtek/Intel PCIe):** Usually works perfectly.
+
+If your adapter ignores the change, Cold Mac will report `NOT VERIFIED` and automatically roll back to your original MAC.
+
+## Requirements
+- Windows 11 (or Windows 10)
+- Python 3.10 or newer
+- Administrator privileges (for changing MAC addresses)
+
+## Installation
+
+1. Clone this repository or download the source code.
+2. Ensure Python is installed and added to your system `PATH`.
+3. No `pip install` is required.
 
 ## Usage
 
-    cold-mac --list
-    cold-mac --list --all
-    cold-mac --interface "Wi-Fi" --random
-    cold-mac --interface "Wi-Fi" --random --vendor Intel
-    cold-mac --interface "Wi-Fi" --mac 3C970E1A2B3C
-    cold-mac --interface "Wi-Fi" --revert
-    cold-mac --restore-all
-    cold-mac --boot
-    cold-mac --no-boot
+### 1. Interactive Mode (Recommended)
+Double-click `cold-mac.bat` (or run `py -3 cold_mac.py` without arguments) to launch the Coldroom interface.
 
-- `--list` shows physical adapters, the MAC Windows currently reports, the
-  custom MAC if one is set, and the vendor name recorded in the config.
-- `--list --all` also shows virtual adapters (WAN Miniport, Hyper-V, TAP,
-  VPN, Wi-Fi Direct, Bluetooth PAN, NPcap).
-- `--random` picks a real vendor OUI from the built-in list and appends 3
-  random bytes. `--vendor` pins the vendor.
-- `--mac` sets a specific address. First byte must be even (unicast).
-- `--revert` clears one adapter and restores the hardware MAC.
-- `--restore-all` reverts every adapter in the saved config.
-- `--boot` / `--no-boot` register or remove the logon task.
+### 2. Command Line Interface (CLI)
+Run these commands from an **Administrator** terminal:
 
-## Reading the --list output
+**List available adapters:**
+```powershell
+py -3 cold_mac.py list
+Set a random locally administered MAC:
 
-The TYPE column tells you what the CURRENT MAC probably is:
+powershell
+py -3 cold_mac.py set "Wi-Fi" --random
+Set a specific MAC:
 
-| TYPE | Meaning |
-|------|---------|
-| `REAL` (blue) | No registry override, universally administered bit clear. *Likely* the burned-in hardware MAC. |
-| `SPOOFED` (yellow) | NetworkAddress in registry matches Cold Mac's config — you set it. |
-| `CUSTOM` (magenta) | NetworkAddress in registry but not from Cold Mac — another tool set it. |
-| `LOCAL` (red) | No registry override, but the locally administered bit is set. Windows 11's random Wi-Fi feature, or another randomizer. |
-| `ABSENT` (gray) | Adapter not present / disconnected. |
+powershell
+py -3 cold_mac.py set "Wi-Fi" --mac 02:11:22:33:44:55
+Restore the original hardware MAC:
 
-**Caveat:** `REAL` is *likely*, not *definitively*, the hardware MAC. A
-few drivers present a Windows-11-randomized Wi-Fi MAC as universally
-administered, which is indistinguishable from real hardware at layer 2.
-The only way to confirm a spoof took effect is Device Manager's Advanced
-tab or `arp -a` from another device — both documented below.
+powershell
+py -3 cold_mac.py restore "Wi-Fi"
+Note: You must use the exact adapter name or GUID shown in the list command.
 
-Colors require a VT-capable console (Windows Terminal, PowerShell 7,
-cmd.exe on Win11). If you see escape sequences like `[94m` instead of
-color, run with `--no-color`.
+How it works
+You select an adapter.
 
-## Locally administered vs vendor MAC
+Cold Mac maps its Interface GUID to the correct Registry Class Key.
 
-Cold Mac 1.1.0 deliberately does **not** generate `02`-prefixed locally
-administered MACs by default, because some routers and NAC systems flag
-them. It uses real vendor OUIs instead, which is what actual hardware
-presents. If you need a locally administered MAC for a specific test,
-pass it via `--mac`.
+It backs up the original NetworkAddress state to %LOCALAPPDATA%\ColdMac.
 
-Note that impersonating a specific vendor's OUI is a different act from
-setting a generic local address — in some jurisdictions and network
-policies that difference matters. You are responsible for the choice.
+It writes the new MAC and restarts the adapter.
 
-## Verifying a spoof
+It reads back the adapter's reported MAC.
 
-On some Windows drivers, `getmac` and `ipconfig /all` continue to report
-the hardware MAC even after a successful registry change; the change is
-visible on the wire, just not to local tools. Cold Mac prints a note when
-this happens. To confirm the driver accepted the value, open
-**Device Manager → Network adapters → your adapter → Properties →
-Advanced → Network Address**. If your MAC is there, the driver has it.
+If the MAC matches -> MATCH. If it fails -> NOT VERIFIED (and it rolls back).
 
-The most reliable external check is on another device on the same LAN:
-
-    arp -a
-
-...and look for the IP your machine was assigned. The MAC shown there is
-what the network sees.
-
-## Troubleshooting
-
-- **"administrator privileges required"** — right-click Terminal and
-  *Run as administrator*. `--list` works without admin.
-- **"getmac reports ..." note after applying** — expected on some
-  drivers; see the verification section.
-- **Adapter disappears after bounce** — some USB Wi-Fi adapters take
-  10-20 seconds to re-enumerate. Wait, or replug.
-- **Driver ignores the value entirely** — a few Intel Wi-Fi models need
-  `PnPCapabilities = 24` under the adapter's class key before they will
-  honour `NetworkAddress`. See GUIDE.md.
-- **`cold-mac` not recognised** — the new `PATH` only applies to
-  terminals opened after `install.bat` ran.
-
-## Legal
-
-MAC address changing is legal in most jurisdictions and is a built-in
-Windows 11 privacy feature. It is illegal to use it to evade a lawful
-access-control decision (a ban you were given, fraud, unauthorized
-access). You are responsible for how you use it.
-
-## License
-
-MIT.
+License
+MIT License. See LICENSE for details.
+Created by parasitekilling.
